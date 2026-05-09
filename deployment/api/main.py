@@ -54,18 +54,23 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Fruit Classification MLOps API", lifespan=lifespan)
 
 # --- 2. ฟังก์ชันทำนายผล (รันใน Worker Process) ---
+# --- แก้ไขส่วนที่ 2: ฟังก์ชันทำนายผล ---
 def run_inference(image_bytes, model_path):
-    # ใน Multiprocessing บางครั้ง SESSION ไม่ถูกส่งต่อมา ต้องโหลดใหม่ในแต่ละ Process หรือดึงจาก Global
-    # เพื่อความชัวร์และเร็วที่สุดบน Cloud เราจะใช้ Global SESSION ถ้ามี
     global SESSION
+    # สำคัญมาก: ใน Linux Worker ต้องสร้าง Session ของตัวเองเท่านั้น ห้ามใช้ร่วมกับ Main
     if SESSION is None:
+        import onnxruntime as ort # Import ข้างในเพื่อความชัวร์ใน Worker
         SESSION = ort.InferenceSession(model_path)
     
     img = Image.open(io.BytesIO(image_bytes)).convert('RGB').resize((224, 224))
-    img_array = np.array(img).astype(np.float32) 
+    img_array = np.array(img).astype(np.float32)
+    
+    # ปกติโมเดลส่วนใหญ่ต้องหาร 255.0 (ถ้าไม่ทำ Confidence อาจจะเพี้ยนหรือ Error ได้)
+    img_array /= 255.0 
     img_array = np.expand_dims(img_array, axis=0)
 
     input_name = SESSION.get_inputs()[0].name
+    # ตรวจสอบ Shape ว่าเป็น [1, 224, 224, 3] หรือ [1, 3, 224, 224] ตามที่โมเดลเทรนมา
     predictions = SESSION.run(None, {input_name: img_array})[0]
     
     prob = predictions[0] 
