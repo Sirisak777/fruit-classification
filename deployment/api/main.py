@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
     print("🚀 Starting High-Throughput System...")
     
     CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-    MODEL_PATH = os.path.join(CURRENT_DIR, "fruit_model_quantized.onnx")
+    MODEL_PATH = os.path.join(CURRENT_DIR, "fruit_model.onnx")
     
     # เช็คไฟล์โมเดล
     if not os.path.exists(MODEL_PATH):
@@ -66,8 +66,25 @@ def run_inference(image_bytes, model_path):
         img_array = np.array(img).astype(np.float32) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
 
-        input_name = session.get_inputs()[0].name
-        raw_predictions = session.run(None, {input_name: img_array})[0]
+        # EfficientNet ImageNet normalization parameters
+        # Mean: [0.485, 0.456, 0.406], Std: [0.229, 0.224, 0.225]
+        mean = np.array([0.485, 0.456, 0.406]).reshape(1, 1, 1, 3).astype(np.float32)
+        std = np.array([0.229, 0.224, 0.225]).reshape(1, 1, 1, 3).astype(np.float32)
+
+        # Prepare inputs for the ONNX model
+        inputs = session.get_inputs()
+        input_dict = {}
+        
+        if len(inputs) == 3:
+            # Model with normalization layers
+            input_dict[inputs[0].name] = img_array  # Image input
+            input_dict[inputs[1].name] = mean       # Normalization mean
+            input_dict[inputs[2].name] = std        # Normalization std
+        else:
+            # Simple model with just image input
+            input_dict[inputs[0].name] = img_array
+
+        raw_predictions = session.run(None, input_dict)[0]
         
         # ปรับการดึงค่ารองรับทั้ง Shape [1, 3] และ [3]
         preds = np.squeeze(raw_predictions) 
@@ -93,7 +110,7 @@ async def read_root():
 async def predict(file: UploadFile = File(...)):
     # 1. เช็คความพร้อม (กัน Error 500 แบบไม่มีสาเหตุ)
     CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-    MODEL_PATH = os.path.join(CURRENT_DIR, "fruit_model_quantized.onnx")
+    MODEL_PATH = os.path.join(CURRENT_DIR, "fruit_model.onnx")
 
     if not os.path.exists(MODEL_PATH):
         raise HTTPException(status_code=503, detail="Model file missing on server. Check Git LFS.")

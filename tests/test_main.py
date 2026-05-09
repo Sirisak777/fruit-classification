@@ -14,9 +14,9 @@ from main import app
 
 # 2. การเช็คไฟล์โมเดลที่ "ฉลาด" ขึ้น (เช็คทุกจุดที่โมเดลอาจจะไปอยู่)
 POSSIBLE_PATHS = [
-    "fruit_model_quantized.onnx",                          # ใน Docker/Root
-    os.path.join(BASE_DIR, "deployment", "api", "fruit_model_quantized.onnx"), # Local Path
-    os.path.join(BASE_DIR, "fruit_model_quantized.onnx")   # CI Path
+    "fruit_model.onnx",                          # ใน Docker/Root
+    os.path.join(BASE_DIR, "deployment", "api", "fruit_model.onnx"), # Local Path
+    os.path.join(BASE_DIR, "fruit_model.onnx")   # CI Path
 ]
 MODEL_EXISTS = any(os.path.exists(p) for p in POSSIBLE_PATHS)
 
