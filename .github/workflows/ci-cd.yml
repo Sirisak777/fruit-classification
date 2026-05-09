@@ -12,6 +12,7 @@ jobs:
         uses: actions/checkout@v3
         with:
           fetch-depth: 0
+          lfs: true
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -25,6 +26,16 @@ jobs:
           pip install -r deployment/api/requirements.txt
           pip install pytest httpx
 
+      - name: Verify Model Files
+        run: |
+          echo "Checking for model files..."
+          ls -la deployment/api/
+          if [ -f "deployment/api/fruit_model.onnx" ]; then
+            echo "✅ Model file found: $(ls -lh deployment/api/fruit_model.onnx)"
+          else
+            echo "❌ Model file NOT found"
+          fi
+
       - name: Run Unit Tests
         timeout-minutes: 5  # ถ้าเกิน 5 นาทีให้ตัดทิ้งเลย
         run: |
@@ -34,12 +45,14 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
+          # Install Git LFS if not already available
+          git lfs install
+          
           # เพิ่ม Remote ของ Hugging Face
           git remote add hf https://Sirisak959:$HF_TOKEN@huggingface.co/spaces/Sirisak959/fruit-classification-app
           
           # ดึงข้อมูลล่าสุดจาก HF มาก่อนเพื่อป้องกัน Conflict
-          git fetch hf main
+          git fetch hf main || true
           
-          # บังคับส่งเฉพาะโค้ด (และ README) ไปยัง HF
-          # ใช้ --force เพื่อทับประวัติเดิมที่อาจมีไฟล์ Binary ค้างอยู่บนนั้น
-          git push hf main --force
+          # Push with LFS support
+          git push hf main
