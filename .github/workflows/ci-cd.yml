@@ -1,0 +1,48 @@
+name: Fruit Classification MLOps CI/CD
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  mlops-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          # ติดตั้ง libs ที่จำเป็นสำหรับการรัน Test (รวมถึง ONNX และ libs ภาพ)
+          sudo apt-get update && sudo apt-get install -y libgl1 libglib2.0-0
+          pip install -r deployment/api/requirements.txt
+          pip install pytest httpx
+
+      - name: Run Unit Tests
+        timeout-minutes: 5  # ถ้าเกิน 5 นาทีให้ตัดทิ้งเลย
+        run: |
+          pytest tests/test_main.py
+
+      - name: Push to Hugging Face Spaces
+        if: success()
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        # ในไฟล์ main.yml ส่วน Push to Hugging Face
+        run: |
+          git config --global user.email "bot@github.com"
+          git config --global user.name "GitHub Action"
+          
+          # สร้าง Branch ใหม่ที่ไม่มีประวัติเก่า แล้วบีบให้เหลือ Commit เดียว
+          git checkout --orphan latest-branch
+          git add -A
+          git commit -m "Initial deploy without history"
+          
+          # Push ไปที่ HF Space โดยบังคับทับของเก่า
+          git push --force https://x-token:$HF_TOKEN@huggingface.co/spaces/Sirisak959/fruit-classification-app latest-branch:main
