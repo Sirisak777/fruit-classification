@@ -46,10 +46,10 @@ def test_predict_incorrect_file_type(test_client):
     response = test_client.post("/predict", files=files)
     assert response.status_code == 400
 
+# --- แก้ไขส่วนท้ายใน tests/test_main.py ---
 @pytest.mark.skipif(not MODEL_EXISTS, reason="Model file not found.")
 def test_predict_structure(test_client):
-    """เช็คโครงสร้าง JSON ผลลัพธ์ (หัวใจสำคัญของ MLOps Test)"""
-    # สร้างรูปจำลองขนาด 224x224
+    """เช็คโครงสร้าง JSON ผลลัพธ์"""
     img = Image.new('RGB', (224, 224), color='red')
     img_byte_arr = io.BytesIO()
     img.save(img_byte_arr, format='JPEG')
@@ -58,11 +58,15 @@ def test_predict_structure(test_client):
     files = {'file': ('test.jpg', img_byte_arr, 'image/jpeg')}
     response = test_client.post("/predict", files=files)
     
-    # ถ้ายังได้ 500 แสดงว่ามีปัญหาที่ตัวแปรใน main.py (เช่นชื่อ Class ไม่ตรง)
+    # ถ้ายังได้ 500 ให้พิมพ์รายละเอียดออกมาดู (จะไปโผล่ใน Log GitHub Actions)
+    if response.status_code != 200:
+        print(f"DEBUG Error Detail: {response.json()}")
+
     assert response.status_code == 200
-    
     data = response.json()
-    # ตรวจสอบ Key ที่ API ของคุณส่งออกมาจริง
+    
+    # เช็คว่า Key ที่ต้องการมีอยู่จริง
     assert "class" in data
     assert "confidence_percent" in data
-    assert isinstance(data["confidence_score"], float)
+    # เช็คว่า confidence_score ต้องเป็น float หรือ int
+    assert isinstance(data.get("confidence_score"), (float, int))

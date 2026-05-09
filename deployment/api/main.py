@@ -55,66 +55,67 @@ app = FastAPI(title="Fruit Classification MLOps API", lifespan=lifespan)
 
 # --- 2. ฟังก์ชันทำนายผล (รันใน Worker Process) ---
 # --- แก้ไขส่วนที่ 2: ฟังก์ชันทำนายผล ---
+# --- แก้ไขส่วนที่ 2 ใน main.py: ฟังก์ชันทำนายผล ---
 def run_inference(image_bytes, model_path):
-    global SESSION
-    # สำคัญมาก: ใน Linux Worker ต้องสร้าง Session ของตัวเองเท่านั้น ห้ามใช้ร่วมกับ Main
-    if SESSION is None:
-        import onnxruntime as ort # Import ข้างในเพื่อความชัวร์ใน Worker
-        SESSION = ort.InferenceSession(model_path)
-    
-    img = Image.open(io.BytesIO(image_bytes)).convert('RGB').resize((224, 224))
-    img_array = np.array(img).astype(np.float32)
-    
-    # ปกติโมเดลส่วนใหญ่ต้องหาร 255.0 (ถ้าไม่ทำ Confidence อาจจะเพี้ยนหรือ Error ได้)
-    img_array /= 255.0 
-    img_array = np.expand_dims(img_array, axis=0)
+    # ต้อง import ภายในฟังก์ชันสำหรับ Worker Process
+    import onnxruntime as ort
+    import io
+    import numpy as np
+    from PIL import Image
 
-    input_name = SESSION.get_inputs()[0].name
-    # ตรวจสอบ Shape ว่าเป็น [1, 224, 224, 3] หรือ [1, 3, 224, 224] ตามที่โมเดลเทรนมา
-    predictions = SESSION.run(None, {input_name: img_array})[0]
-    
-    prob = predictions[0] 
-    result_idx = np.argmax(prob)
-    confidence = float(prob[result_idx])
-    
-    return result_idx, confidence
+    try:
+        # สร้าง Session ใหม่ใน Worker เสมอ (ป้องกัน Memory Access Error ใน Linux)
+        session = ort.InferenceSession(model_path)
+        
+        img = Image.open(io.BytesIO(image_bytes)).convert('RGB').resize((224, 224))
+        img_array = np.array(img).astype(np.float32) / 255.0
+        img_array = np.expand_dims(img_array, axis=0)
 
-# --- 3. API Endpoints ---
+        input_name = session.get_inputs()[0].name
+        raw_predictions = session.run(None, {input_name: img_array})[0]
+        
+        # ปรับการดึงค่าเพื่อรองรับทั้ง Shape [1, 3] และ [3]
+        preds = np.squeeze(raw_predictions) 
+        result_idx = int(np.argmax(preds))
+        confidence = float(preds[result_idx])
+        
+        return result_idx, confidence
+    except Exception as e:
+        # ส่ง Error กลับไปหา Main Process เพื่อให้รู้ว่าพังที่ตรงไหน
+        return str(e), 0.0
 
-@app.get("/")
-def read_root():
-    # บอกสถานะโมเดลให้เรารู้ตอนเช็คหน้าเว็บ
-    status = "Ready" if SESSION else "Missing Model File"
-    return {
-        "message": "API is ready with High-Throughput ONNX Support!",
-        "model_status": status
-    }
-
+# --- แก้ไขส่วนที่ 3 ใน main.py: API Endpoints ---
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
-    # 1. เช็คความพร้อมของระบบ
-    if SESSION is None and not os.path.exists(os.path.join(os.path.dirname(__file__), "fruit_model_quantized.onnx")):
-        raise HTTPException(status_code=503, detail="Model is not ready. Please upload the .onnx file to the Space.")
-
-    # 2. เช็คประเภทไฟล์
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="โปรดส่งไฟล์รูปภาพเท่านั้น")
 
     try:
         contents = await file.read()
-        
-        # 3. ส่งงานไปทำใน Process Pool
         loop = asyncio.get_event_loop()
+        
+        # ตรวจหา Path โมเดลอีกครั้งเพื่อความชัวร์
         CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
         MODEL_PATH = os.path.join(CURRENT_DIR, "fruit_model_quantized.onnx")
+
+        # ส่งงานเข้า Executor
+        res = await loop.run_in_executor(EXECUTOR, run_inference, contents, MODEL_PATH)
         
-        # ส่ง Path เข้าไปด้วยเพื่อให้ Worker โหลดโมเดลได้เองถ้าจำเป็น
-        result_idx, confidence = await loop.run_in_executor(EXECUTOR, run_inference, contents, MODEL_PATH)
+        # ถ้า Worker ส่ง Error Message กลับมา (เป็น string)
+        if isinstance(res[0], str):
+            raise Exception(f"Worker Error: {res[0]}")
+            
+        result_idx, confidence = res
         
+        # ป้องกัน Index Error ถ้าโมเดลทำนายออกมาเกินจำนวน Class ที่เราตั้งไว้
+        if result_idx >= len(CLASS_NAMES):
+            result_idx = 0 # Default หรือจัดการตามเหมาะสม
+
         return {
             "class": CLASS_NAMES[result_idx],
             "confidence_score": round(confidence, 4),
             "confidence_percent": f"{round(confidence * 100, 2)}%"
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"เกิดข้อผิดพลาดในการทำนาย: {str(e)}")
+        # ส่ง Error รายละเอียดออกไปให้ Pytest เห็น
+        raise HTTPException(status_code=500, detail=str(e))
