@@ -30,19 +30,16 @@ jobs:
         run: |
           pytest tests/test_main.py
 
-      - name: Push to Hugging Face Spaces
-        if: success()
+      - name: Push to Hugging Face
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        # ในไฟล์ main.yml ส่วน Push to Hugging Face
         run: |
-          git config --global user.email "bot@github.com"
-          git config --global user.name "GitHub Action"
+          # เพิ่ม Remote ของ Hugging Face
+          git remote add hf https://Sirisak959:$HF_TOKEN@huggingface.co/spaces/Sirisak959/fruit-classification-app
           
-          # สร้าง Branch ใหม่ที่ไม่มีประวัติเก่า แล้วบีบให้เหลือ Commit เดียว
-          git checkout --orphan latest-branch
-          git add -A
-          git commit -m "Initial deploy without history"
+          # ดึงข้อมูลล่าสุดจาก HF มาก่อนเพื่อป้องกัน Conflict
+          git fetch hf main
           
-          # Push ไปที่ HF Space โดยบังคับทับของเก่า
-          git push --force https://x-token:$HF_TOKEN@huggingface.co/spaces/Sirisak959/fruit-classification-app latest-branch:main
+          # บังคับส่งเฉพาะโค้ด (และ README) ไปยัง HF
+          # ใช้ --force เพื่อทับประวัติเดิมที่อาจมีไฟล์ Binary ค้างอยู่บนนั้น
+          git push hf main --force
