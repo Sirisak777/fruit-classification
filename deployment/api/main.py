@@ -3,7 +3,7 @@ import os
 import multiprocessing
 import asyncio
 from concurrent.futures import ProcessPoolExecutor
-from contextlib import asynccontextmanager # เพิ่มสำหรับการจัดการ Lifecycle
+from contextlib import asynccontextmanager
 import numpy as np
 import onnxruntime as ort
 from PIL import Image
@@ -16,23 +16,22 @@ CLASS_NAMES = ["Banana", "Strawberry", "Tomato"]
 SESSION = None
 EXECUTOR = None
 
-# --- 1. ส่วนการจัดการ Lifecycle (Startup/Shutdown แบบใหม่) ---
+# --- 1. ส่วนการจัดการ Lifecycle ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global SESSION, EXECUTOR
     print("🚀 Starting High-Throughput System...")
     
-    # กำหนด Path โมเดลให้แม่นยำ
     CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
     MODEL_PATH = os.path.join(CURRENT_DIR, "fruit_model_quantized.onnx")
     
-    # ตรวจสอบว่ามีไฟล์โมเดลไหม (ป้องกันแอปค้างถ้าเรายังไม่ได้ Upload ไฟล์)
+    # เช็คไฟล์โมเดล
     if not os.path.exists(MODEL_PATH):
         print(f"⚠️ Warning: Model file NOT found at {MODEL_PATH}")
         SESSION = None
     else:
         try:
-            # โหลดโมเดลผ่าน ONNX Runtime
+            # ทดสอบโหลดใน Main Process ก่อน
             SESSION = ort.InferenceSession(MODEL_PATH)
             print(f"✅ Model loaded successfully from: {MODEL_PATH}")
             
@@ -40,31 +39,27 @@ async def lifespan(app: FastAPI):
             EXECUTOR = ProcessPoolExecutor(max_workers=multiprocessing.cpu_count())
             print(f"✅ Multiprocessing ready (Workers: {multiprocessing.cpu_count()})")
         except Exception as e:
-            print(f"❌ Error initializing model: {e}")
+            print(f"❌ Error initializing model (Possible LFS Issue): {e}")
             SESSION = None
 
-    yield # ช่วงที่แอปทำงาน
+    yield
 
     # --- ส่วน Shutdown ---
-    print("🛑 Shutting down system...")
     if EXECUTOR:
+        print("🛑 Shutting down system...")
         EXECUTOR.shutdown()
 
-# ประกาศแอปพร้อมใช้งาน lifespan
 app = FastAPI(title="Fruit Classification MLOps API", lifespan=lifespan)
 
 # --- 2. ฟังก์ชันทำนายผล (รันใน Worker Process) ---
-# --- แก้ไขส่วนที่ 2: ฟังก์ชันทำนายผล ---
-# --- แก้ไขส่วนที่ 2 ใน main.py: ฟังก์ชันทำนายผล ---
 def run_inference(image_bytes, model_path):
-    # ต้อง import ภายในฟังก์ชันสำหรับ Worker Process
     import onnxruntime as ort
     import io
     import numpy as np
     from PIL import Image
 
     try:
-        # สร้าง Session ใหม่ใน Worker เสมอ (ป้องกัน Memory Access Error ใน Linux)
+        # Worker ต้องโหลด Session ใหม่เสมอเพื่อความปลอดภัยใน Linux
         session = ort.InferenceSession(model_path)
         
         img = Image.open(io.BytesIO(image_bytes)).convert('RGB').resize((224, 224))
@@ -74,19 +69,35 @@ def run_inference(image_bytes, model_path):
         input_name = session.get_inputs()[0].name
         raw_predictions = session.run(None, {input_name: img_array})[0]
         
-        # ปรับการดึงค่าเพื่อรองรับทั้ง Shape [1, 3] และ [3]
+        # ปรับการดึงค่ารองรับทั้ง Shape [1, 3] และ [3]
         preds = np.squeeze(raw_predictions) 
         result_idx = int(np.argmax(preds))
         confidence = float(preds[result_idx])
         
         return result_idx, confidence
     except Exception as e:
-        # ส่ง Error กลับไปหา Main Process เพื่อให้รู้ว่าพังที่ตรงไหน
         return str(e), 0.0
 
-# --- แก้ไขส่วนที่ 3 ใน main.py: API Endpoints ---
+# --- 3. API Endpoints ---
+
+@app.get("/")
+async def read_root():
+    """แยกออกมาให้ทำงานได้เสมอแม้โมเดลพัง เพื่อป้องกัน 404 ใน Pytest"""
+    status = "Ready" if SESSION else "Model Missing or Corrupted (LFS Issue)"
+    return {
+        "message": "API is ready with High-Throughput ONNX Support!",
+        "model_status": status
+    }
+
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
+    # 1. เช็คความพร้อม (กัน Error 500 แบบไม่มีสาเหตุ)
+    CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+    MODEL_PATH = os.path.join(CURRENT_DIR, "fruit_model_quantized.onnx")
+
+    if not os.path.exists(MODEL_PATH):
+        raise HTTPException(status_code=503, detail="Model file missing on server. Check Git LFS.")
+
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="โปรดส่งไฟล์รูปภาพเท่านั้น")
 
@@ -94,28 +105,21 @@ async def predict(file: UploadFile = File(...)):
         contents = await file.read()
         loop = asyncio.get_event_loop()
         
-        # ตรวจหา Path โมเดลอีกครั้งเพื่อความชัวร์
-        CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-        MODEL_PATH = os.path.join(CURRENT_DIR, "fruit_model_quantized.onnx")
+        # 2. ส่งงานเข้า Executor
+        if EXECUTOR is None: # ถ้าตอน Startup โหลดไม่ผ่าน ลองโหลดใหม่ที่นี่
+             raise Exception("Executor not initialized. Model might be corrupted.")
 
-        # ส่งงานเข้า Executor
         res = await loop.run_in_executor(EXECUTOR, run_inference, contents, MODEL_PATH)
         
-        # ถ้า Worker ส่ง Error Message กลับมา (เป็น string)
-        if isinstance(res[0], str):
-            raise Exception(f"Worker Error: {res[0]}")
+        if isinstance(res[0], str): # ถ้าได้ Error message กลับมา
+            raise Exception(f"Inference Error: {res[0]}")
             
         result_idx, confidence = res
         
-        # ป้องกัน Index Error ถ้าโมเดลทำนายออกมาเกินจำนวน Class ที่เราตั้งไว้
-        if result_idx >= len(CLASS_NAMES):
-            result_idx = 0 # Default หรือจัดการตามเหมาะสม
-
         return {
             "class": CLASS_NAMES[result_idx],
             "confidence_score": round(confidence, 4),
             "confidence_percent": f"{round(confidence * 100, 2)}%"
         }
     except Exception as e:
-        # ส่ง Error รายละเอียดออกไปให้ Pytest เห็น
         raise HTTPException(status_code=500, detail=str(e))
