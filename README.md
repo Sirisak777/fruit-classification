@@ -47,6 +47,7 @@ curl -X GET "https://<YOUR_CLOUD_URL>/" -H "accept: application/json"
 ```
 2. **ทำนายประเภทผลไม้ (Prediction)**
 Method: POST | Endpoint: /predict
+
 **ตัวอย่างสำหรับทดสอบบนเครื่องตัวเอง (Local)**
 
 ```PowerShell
